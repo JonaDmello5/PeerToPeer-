@@ -27,12 +27,14 @@ export default function Home() {
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-background p-4">
       <div className="flex items-center gap-4 mb-8">
-        <Video className="w-16 h-16 text-primary" />
-        <h1 className="text-5xl font-bold font-headline text-primary">Connect Now</h1>
+        <div className="bg-primary p-3 rounded-lg">
+          <Video className="w-12 h-12 text-primary-foreground" />
+        </div>
+        <h1 className="text-5xl font-bold text-foreground">Connect Now</h1>
       </div>
-      <Card className="w-full max-w-md shadow-lg">
+      <Card className="w-full max-w-md shadow-lg border-border">
         <CardHeader>
-          <CardTitle className="text-center text-2xl font-headline">Join or Create a Meeting</CardTitle>
+          <CardTitle className="text-center text-2xl">Join or Create a Meeting</CardTitle>
           <CardDescription className="text-center">
             Enter a room name to start or join a video call.
           </CardDescription>
