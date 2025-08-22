@@ -2,162 +2,112 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { useParams, useRouter } from "next/navigation";
-import { firestore } from "@/lib/firebase";
-import {
-  doc,
-  getDoc,
-  setDoc,
-  collection,
-  addDoc,
-  onSnapshot,
-  updateDoc,
-  writeBatch,
-  query,
-  getDocs,
-} from "firebase/firestore";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Copy, Loader2 } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
+import { Mic, MicOff, Video, VideoOff, PhoneOff, Copy, Loader2, LinkIcon, Check } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 
-// Public STUN servers
 const servers = {
   iceServers: [
     {
       urls: ["stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"],
     },
   ],
-  iceCandidatePoolSize: 10,
 };
+
+type Role = 'local' | 'remote';
 
 export default function RoomPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { toast } = useToast();
-  const roomId = params.roomId as string;
+  const role = params.roomId as Role;
 
-  // Refs for WebRTC objects to prevent re-renders
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
-  
-  // State for UI controls
+
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [isHangingUp, setIsHangingUp] = useState(false);
-  const [status, setStatus] = useState("Initializing...");
+  const [isConnected, setIsConnected] = useState(false);
 
-  // Refs for video elements
+  const [offerSdp, setOfferSdp] = useState('');
+  const [answerSdp, setAnswerSdp] = useState('');
+  const [remoteSdp, setRemoteSdp] = useState('');
+
+  const [iceCandidates, setIceCandidates] = useState<RTCIceCandidate[]>([]);
+  const [gatheredCandidates, setGatheredCandidates] = useState('');
+  const [remoteCandidates, setRemoteCandidates] = useState('');
+  
+  const [isOfferCopied, setIsOfferCopied] = useState(false);
+  const [isAnswerCopied, setIsAnswerCopied] = useState(false);
+  const [isCandidatesCopied, setIsCandidatesCopied] = useState(false);
+
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
 
-  const hangUp = useCallback(async () => {
+  const hangUp = useCallback(() => {
     setIsHangingUp(true);
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     peerConnectionRef.current?.close();
-    
-    // Clean up Firestore documents
-    if (roomId) {
-      const roomRef = doc(firestore, 'rooms', roomId);
-      const callerCandidatesQuery = query(collection(roomRef, 'callerCandidates'));
-      const calleeCandidatesQuery = query(collection(roomRef, 'calleeCandidates'));
-      
-      const [callerCandidatesSnapshot, calleeCandidatesSnapshot] = await Promise.all([
-        getDocs(callerCandidatesQuery),
-        getDocs(calleeCandidatesQuery)
-      ]);
-      
-      const batch = writeBatch(firestore);
-      callerCandidatesSnapshot.forEach(doc => batch.delete(doc.ref));
-      calleeCandidatesSnapshot.forEach(doc => batch.delete(doc.ref));
-      batch.delete(roomRef);
-      await batch.commit().catch(console.error);
-    }
-
     router.push('/');
-  }, [router, roomId]);
+  }, [router]);
 
-  // Main useEffect for setting up the WebRTC connection
   useEffect(() => {
-    // This effect should run only once per component mount.
-    // All WebRTC objects are stored in refs to prevent them from being re-created on re-renders.
     const setupWebRTC = async () => {
       try {
+        const pc = new RTCPeerConnection(servers);
+        peerConnectionRef.current = pc;
+
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         localStreamRef.current = stream;
         if (localVideoRef.current) localVideoRef.current.srcObject = stream;
 
+        stream.getTracks().forEach(track => pc.addTrack(track, stream));
+        
         remoteStreamRef.current = new MediaStream();
         if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStreamRef.current;
-
-        const pc = new RTCPeerConnection(servers);
-        peerConnectionRef.current = pc;
-
-        localStreamRef.current.getTracks().forEach(track => {
-          pc.addTrack(track, localStreamRef.current!);
-        });
-
+        
         pc.ontrack = event => {
           event.streams[0].getTracks().forEach(track => {
             remoteStreamRef.current?.addTrack(track);
           });
-          setStatus("Connected");
+          setIsConnected(true);
+        };
+        
+        pc.onicecandidate = e => {
+            if (e.candidate) {
+                setIceCandidates(prev => [...prev, e.candidate]);
+            }
         };
 
-        const roomRef = doc(firestore, 'rooms', roomId);
-        const roomSnapshot = await getDoc(roomRef);
-
-        if (!roomSnapshot.exists()) {
-          toast({ title: "Error", description: "Room not found.", variant: "destructive" });
-          router.push('/');
-          return;
-        }
-
-        const isRoomEmpty = Object.keys(roomSnapshot.data()).length === 0;
-        const role = isRoomEmpty ? 'caller' : 'callee';
-
-        if (role === 'caller') {
-          setStatus("Creating room...");
-          const callerCandidatesCollection = collection(roomRef, 'callerCandidates');
-          pc.onicecandidate = e => e.candidate && addDoc(callerCandidatesCollection, e.candidate.toJSON());
-
-          const offerDescription = await pc.createOffer();
-          await pc.setLocalDescription(offerDescription);
-          await setDoc(roomRef, { offer: { type: offerDescription.type, sdp: offerDescription.sdp } });
-
-          onSnapshot(roomRef, snapshot => {
-            const data = snapshot.data();
-            if (!pc.currentRemoteDescription && data?.answer) {
-              pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+        pc.onicegatheringstatechange = () => {
+            if(pc.iceGatheringState === 'complete') {
+                setGatheredCandidates(JSON.stringify(pc.localDescription));
             }
-          });
+        };
 
-          onSnapshot(collection(roomRef, 'calleeCandidates'), s => s.docChanges().forEach(c => {
-            if (c.type === 'added') pc.addIceCandidate(new RTCIceCandidate(c.doc.data()));
-          }));
-          setStatus("Waiting for a peer to join...");
-
-        } else { // Callee logic
-          setStatus("Joining room...");
-          const calleeCandidatesCollection = collection(roomRef, 'calleeCandidates');
-          pc.onicecandidate = e => e.candidate && addDoc(calleeCandidatesCollection, e.candidate.toJSON());
-
-          await pc.setRemoteDescription(new RTCSessionDescription(roomSnapshot.data().offer));
-
-          const answerDescription = await pc.createAnswer();
-          await pc.setLocalDescription(answerDescription);
-          await updateDoc(roomRef, { answer: { type: answerDescription.type, sdp: answerDescription.sdp } });
-
-          onSnapshot(collection(roomRef, 'callerCandidates'), s => s.docChanges().forEach(c => {
-            if (c.type === 'added') pc.addIceCandidate(new RTCIceCandidate(c.doc.data()));
-          }));
-        }
-
-        pc.onconnectionstatechange = () => {
-          if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-            hangUp();
+        if (role === 'local') {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          setOfferSdp(JSON.stringify(offer));
+        } else if (role === 'remote') {
+          const offerSdp = searchParams.get('offer');
+          if (offerSdp) {
+            const decodedOffer = atob(offerSdp);
+            setOfferSdp(decodedOffer);
+            const offer = JSON.parse(decodedOffer);
+            await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            setAnswerSdp(JSON.stringify(answer));
           }
         }
       } catch (error) {
@@ -168,12 +118,49 @@ export default function RoomPage() {
     
     setupWebRTC();
 
-    // Cleanup function to run on component unmount
     return () => {
-      hangUp();
+      if (!isHangingUp) {
+        hangUp();
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const setRemoteDescription = async () => {
+    try {
+        if (!peerConnectionRef.current) return;
+        const sdp = JSON.parse(remoteSdp);
+        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(sdp));
+    } catch (e) {
+        console.error(e);
+        toast({ title: "Error", description: "Invalid SDP Answer.", variant: "destructive" });
+    }
+  };
+
+  const addRemoteCandidates = async () => {
+    try {
+        if (!peerConnectionRef.current || !remoteCandidates) return;
+        const candidates = JSON.parse(remoteCandidates) as RTCIceCandidate[];
+        for (const candidate of candidates) {
+            await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+        }
+        toast({ title: "Success", description: "ICE candidates added." });
+    } catch (e) {
+        console.error(e);
+        toast({ title: "Error", description: "Invalid ICE candidates.", variant: "destructive" });
+    }
+  };
+  
+  const copyToClipboard = (text: string, callback: () => void) => {
+    navigator.clipboard.writeText(text);
+    callback();
+    setTimeout(() => {
+        if (callback === setIsOfferCopied) setIsOfferCopied(false);
+        if (callback === setIsAnswerCopied) setIsAnswerCopied(false);
+        if (callback === setIsCandidatesCopied) setIsCandidatesCopied(false);
+    }, 2000);
+    toast({title: "Copied to clipboard!"});
+  }
 
   const toggleMic = () => {
     localStreamRef.current?.getAudioTracks().forEach(t => t.enabled = !t.enabled);
@@ -184,39 +171,94 @@ export default function RoomPage() {
     localStreamRef.current?.getVideoTracks().forEach(t => t.enabled = !t.enabled);
     setIsCameraOff(prev => !prev);
   };
-  
-  const copyRoomId = () => {
-    navigator.clipboard.writeText(roomId);
-    toast({ title: "Copied!", description: "Room ID copied to clipboard." });
-  };
+
+  const finalCandidates = JSON.stringify(iceCandidates);
 
   return (
     <div className="flex h-screen flex-col bg-background">
       <header className="p-4 flex justify-between items-center border-b">
         <h1 className="text-xl font-bold font-headline text-primary">Connect Now</h1>
-        <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground hidden sm:inline">Room ID: {roomId}</span>
-            <Button variant="outline" size="sm" onClick={copyRoomId}>
-                <Copy className="h-4 w-4 mr-2" />
-                Copy ID
-            </Button>
-        </div>
+        <Button onClick={() => router.push('/')} variant="outline" size="sm">
+            End Call & Go Home
+        </Button>
       </header>
+      
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-4 p-4 overflow-hidden">
+        <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Card className="relative flex items-center justify-center overflow-hidden bg-black shadow-lg rounded-lg">
+                <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                <div className="absolute bottom-2 left-2 bg-black/50 text-white text-sm px-2 py-1 rounded">You</div>
+            </Card>
+            <Card className="relative flex items-center justify-center overflow-hidden bg-black shadow-lg rounded-lg">
+                <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
+                <div className="absolute bottom-2 left-2 bg-black/50 text-white text-sm px-2 py-1 rounded">Peer</div>
+                {!isConnected && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 text-white p-4 text-center">
+                        <Loader2 className="w-12 h-12 mb-4 animate-spin" />
+                        <p className="text-lg font-headline">Waiting for peer to connect...</p>
+                    </div>
+                )}
+            </Card>
+        </div>
+        
+        <Card className="lg:col-span-1 flex flex-col shadow-lg rounded-lg overflow-hidden">
+            <CardContent className="p-4 space-y-4 overflow-y-auto">
+              <Alert>
+                <LinkIcon className="h-4 w-4" />
+                <AlertTitle>Connection Instructions</AlertTitle>
+                <AlertDescription>
+                  {role === 'local' 
+                    ? "1. Copy the offer and send it to your peer. 2. Paste their answer below."
+                    : "1. Send your answer to your peer. 2. Paste their final candidates below."
+                  }
+                </AlertDescription>
+              </Alert>
+              
+              {role === 'local' && offerSdp && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Your Offer (Step 1)</label>
+                  <Textarea readOnly value={offerSdp} rows={4} className="text-xs"/>
+                  <Button size="sm" onClick={() => copyToClipboard(offerSdp, () => setIsOfferCopied(true))} className="w-full">
+                    {isOfferCopied ? <Check className="mr-2"/> : <Copy className="mr-2"/>}
+                    {isOfferCopied ? 'Copied' : 'Copy Offer'}
+                  </Button>
+                </div>
+              )}
 
-      <main className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4 p-4 overflow-hidden">
-        <Card className="relative flex items-center justify-center overflow-hidden bg-black shadow-lg rounded-lg">
-          <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-          <div className="absolute bottom-2 left-2 bg-black/50 text-white text-sm px-2 py-1 rounded">You</div>
-        </Card>
-        <Card className="relative flex items-center justify-center overflow-hidden bg-black shadow-lg rounded-lg">
-          <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
-          <div className="absolute bottom-2 left-2 bg-black/50 text-white text-sm px-2 py-1 rounded">Peer</div>
-          {status !== "Connected" && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 text-white p-4 text-center">
-                <Loader2 className="w-16 h-16 mb-4 animate-spin" />
-                <p className="text-lg font-headline">{status}</p>
-            </div>
-          )}
+              {role === 'local' && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Peer's Answer (Step 2)</label>
+                  <Textarea placeholder="Paste answer from peer..." value={remoteSdp} onChange={e => setRemoteSdp(e.target.value)} rows={4} className="text-xs"/>
+                  <Button size="sm" onClick={setRemoteDescription} disabled={!remoteSdp}>Set Answer</Button>
+                </div>
+              )}
+
+              {role === 'remote' && answerSdp && (
+                 <div className="space-y-2">
+                    <label className="text-sm font-medium">Your Answer (Step 1)</label>
+                    <Textarea readOnly value={answerSdp} rows={4} className="text-xs"/>
+                    <Button size="sm" onClick={() => copyToClipboard(answerSdp, () => setIsAnswerCopied(true))} className="w-full">
+                       {isAnswerCopied ? <Check className="mr-2"/> : <Copy className="mr-2"/>}
+                       {isAnswerCopied ? 'Copied' : 'Copy Answer'}
+                    </Button>
+                 </div>
+              )}
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Your ICE Candidates</label>
+                <Textarea readOnly value={finalCandidates} rows={4} className="text-xs"/>
+                <Button size="sm" onClick={() => copyToClipboard(finalCandidates, () => setIsCandidatesCopied(true))} className="w-full" disabled={!finalCandidates || finalCandidates === '[]'}>
+                    {isCandidatesCopied ? <Check className="mr-2"/> : <Copy className="mr-2"/>}
+                    {isCandidatesCopied ? 'Copied' : 'Copy Candidates'}
+                </Button>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Peer's ICE Candidates</label>
+                <Textarea placeholder="Paste candidates from peer..." value={remoteCandidates} onChange={e => setRemoteCandidates(e.target.value)} rows={4} className="text-xs"/>
+                <Button size="sm" onClick={addRemoteCandidates} disabled={!remoteCandidates}>Add Candidates</Button>
+              </div>
+            </CardContent>
         </Card>
       </main>
 

@@ -3,35 +3,23 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { collection, addDoc } from "firebase/firestore";
-import { firestore } from "@/lib/firebase";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Rocket, Video, Loader2 } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Video, ArrowRight, CornerUpLeft } from "lucide-react";
 
 export default function Home() {
-  const [roomId, setRoomId] = useState("");
+  const [offerSdp, setOfferSdp] = useState("");
   const router = useRouter();
-  const [isCreating, setIsCreating] = useState(false);
-  const [isJoining, setIsJoining] = useState(false);
 
-  const createRoom = async () => {
-    setIsCreating(true);
-    try {
-      const roomsCollection = collection(firestore, "rooms");
-      const roomRef = await addDoc(roomsCollection, {});
-      router.push(`/room/${roomRef.id}`);
-    } catch (error) {
-      console.error("Error creating room:", error);
-      setIsCreating(false);
-    }
+  const createRoom = () => {
+    router.push(`/room/local`);
   };
 
   const joinRoom = () => {
-    if (roomId.trim()) {
-      setIsJoining(true);
-      router.push(`/room/${roomId.trim()}`);
+    if (offerSdp.trim()) {
+      const encodedSdp = btoa(offerSdp.trim());
+      router.push(`/room/remote?offer=${encodedSdp}`);
     }
   };
 
@@ -41,21 +29,20 @@ export default function Home() {
         <Video className="w-16 h-16 text-primary" />
         <h1 className="text-5xl font-bold font-headline text-primary">Connect Now</h1>
       </div>
-      <Card className="w-full max-w-md shadow-lg">
+      <Card className="w-full max-w-lg shadow-lg">
         <CardHeader>
-          <CardTitle className="text-center text-2xl font-headline">Video Call</CardTitle>
+          <CardTitle className="text-center text-2xl font-headline">Manual Video Call</CardTitle>
           <CardDescription className="text-center">
-            Create a room or join with an ID to start a call.
+            Create a room to generate an offer, or paste one to join.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <Button
             onClick={createRoom}
             className="w-full bg-primary hover:bg-primary/90 text-primary-foreground"
-            disabled={isCreating || isJoining}
           >
-            {isCreating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Rocket className="mr-2 h-4 w-4" />}
-            {isCreating ? "Creating Room..." : "Create Room"}
+            <CornerUpLeft className="mr-2 h-4 w-4" />
+            Create a New Call
           </Button>
           <div className="relative">
             <div className="absolute inset-0 flex items-center">
@@ -63,32 +50,32 @@ export default function Home() {
             </div>
             <div className="relative flex justify-center text-xs uppercase">
               <span className="bg-card px-2 text-muted-foreground">
-                Or join a room
+                Or join with an offer
               </span>
             </div>
           </div>
-          <div className="flex gap-2">
-            <Input
-              type="text"
-              placeholder="Enter Room ID"
-              value={roomId}
-              onChange={(e) => setRoomId(e.target.value)}
+          <div className="space-y-2">
+            <Textarea
+              placeholder="Paste offer from peer here..."
+              value={offerSdp}
+              onChange={(e) => setOfferSdp(e.target.value)}
               className="flex-grow"
-              onKeyUp={(e) => e.key === 'Enter' && joinRoom()}
+              rows={5}
             />
             <Button
               onClick={joinRoom}
               variant="secondary"
-              disabled={isJoining || isCreating || !roomId.trim()}
+              className="w-full"
+              disabled={!offerSdp.trim()}
             >
-              {isJoining ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Join
+              <ArrowRight className="mr-2 h-4 w-4" />
+              Join Call
             </Button>
           </div>
         </CardContent>
       </Card>
       <footer className="mt-8 text-sm text-muted-foreground">
-        <p>Powered by WebRTC & Firebase</p>
+        <p>Powered by WebRTC</p>
       </footer>
     </main>
   );
